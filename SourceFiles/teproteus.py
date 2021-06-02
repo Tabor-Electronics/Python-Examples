@@ -1,33 +1,85 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-# =========================================================================
-# Copyright (C) 2021  Tabor-Electronics Ltd <http://www.taborelec.com/>
+# =============================================================================
+# Copyright (c) 2021 Tabor Electronics Ltd
 #
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 2 of the License, or
-# (at your option) any later version.
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
 #
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
 #
-# You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-# =========================================================================
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+# =============================================================================
 
 '''
 Tabor-Electronics Proteus API.
 
-@author:     Nadav
-@date:       2021-01-12
-@license:    GPL
-@copyright:  2021 Tabor-Electronics Ltd.
-@contact:    <http://www.taborelec.com/>
+Control Proteus PXI hardware-modules directly.
+
+This Python module can be used only from Python code running on the PC that is
+physically connected to the PXI chassis. It wraps the `TEProteus.dll` which is
+a native C DLL (located under `C:/Windows/System32`), and therefore it gives
+a fast way to control the hardware-modules.
+
+There are two classes in this Python module:
+:class:`TEProteusAdmin` and :class:`TEProteusInst`.
+
+:class:`TEProteusAdmin` (the *instruments-administrator*) is used for finding
+the PXI slots which are the connection-slots of the hardware modules, and for
+opening instances of :class:`TEProteusInst`, where each instance of that class
+represents a single *instrument*.
+
+:class:`TEProteusInst` represents a single *instrument* that controls
+one or more hardware-modules. In case of multiple hardware-modules the modules
+must be located in contiguous PXI slots. After opening *instrument*, the user
+can send SCP-Commands download waveform-data etc. using the methods from
+:class:`TEProteusInst`.
+
+**Example of use**
+
+.. code-block:: python
+
+    from teproteus import TEProteusAdmin, TEProteusInst
+    import numpy as np
+
+    with TEProteusAdmin() as admin:
+
+        # Get list of available PXI slots
+        slot_ids = admin.get_slot_ids()
+
+        # Assume that at least one slot was found
+        sid = slot_ids[0]
+
+        # Open a single-slot instrument:
+        with admin.open_instrument(slot_id=sid) as inst
+
+            # Change the default paranoia-level (0, 1, 2)
+            # from normal (1) to high (2). This is good for debugging
+            # because SYSTEM:ERROR is checked after each SCPI command.
+            inst.default_paranoia_level = 2
+
+            # Send query
+            resp = inst.send_scpi_query('*IDN?')
+            print('Connected to: ' + resp)
+
+            # Send command
+            inst.send_scpi_cmd(':INST:CHAN 1; :OUTP ON')
+
 '''
 
 import os
+import gc
 import numpy as np
 import ctypes as ct
 import warnings
@@ -35,8 +87,11 @@ from ctypes.util import find_library
 from numpy.ctypeslib import ndpointer
 
 __version__ = '1.0.1'
-__revision__ = '$Rev: 10308 $'
 __docformat__ = 'reStructuredText'
+
+__all__ = [
+    'TEProteusAdmin',
+    'TEProteusInst']
 
 
 class TEProteusAdmin(object):
@@ -321,6 +376,8 @@ class TEProteusAdmin(object):
                 except Exception:  # pylint: disable=broad-except
                     pass
 
+        gc.collect()
+
     def __init__(self, lib_dir_path=None):
 
         self._libpath = None
@@ -532,9 +589,9 @@ class TEProteusAdmin(object):
         return str('')
 
     def get_slot_idn_str(self, slot_id):
-        '''Gets the *IDN string of the module in the specified slot.
+        '''Gets the `*IDN` string of the module in the specified slot.
         :param slot_id: the slot identifier.
-        :returns: the *IDN string
+        :returns: the `*IDN` string
         '''
         slotInfPtr = self._tep_get_slot_info(np.uint32(slot_id))
         if slotInfPtr:
@@ -632,14 +689,32 @@ class TEProteusAdmin(object):
                 inst.close_instrument()
                 del inst
 
+        gc.collect()
+
         return self._tep_close_all_instruments()
 
 
 class TEProteusInst(object):
-    '''TEProteus Instrument.'''
+    '''Proteus Instrument.
+
+    This class manages one or more hardware-modules as single instrument.
+    '''
 
     def __init__(self, te_proteus_admin, inst_ptr, slot_list):
+        '''
+        Constructor.
 
+        User should not call this method directly, but use the methods
+
+          - :meth:`TEProteusAdmin.open_instrument`
+          - :meth:`TEProteusAdmin.open_multi_slots_instrument`
+
+        In order to create instances of :class:`TEProteusInst`.
+
+        :param te_proteus_admin: the parent :class:`TEProteusAdmin`.
+        :param inst_ptr: pointer to the relevant native C instrument object.
+        :param slot_list: list of slotIds of the relevant PXI slots.
+        '''
         self._slots = slot_list
         self._admin = te_proteus_admin
         self._instptr = inst_ptr
@@ -648,24 +723,34 @@ class TEProteusInst(object):
         self._instr_id = self._admin._tep_get_instrument_id(inst_ptr)
         self._default_paranoia_level = 1
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        del exc_type, exc_value, traceback
+        self.close_instrument()
+
     @property
     def default_paranoia_level(self):
-        '''Gets the default paranoia level (0, 1, or 2).
-        It is used as the default paranoia-level in `send_scpi_cmd`.
+        '''The default paranoia level (0, 1, or 2).
+
+        It is used as default value for the `paranoia_level`
+        argument of the method :meth:`TEProteusInst.send_scpi_cmd`.
+
+        The supported levels are 0, 1 or 2,  where
          - 0: send bare SCPI command
          - 1: append `*OPC?` and send as query
          - 2: append `:SYST:ERR?` and print warning if the response is not 0.
+
+        :getter: Gets the default paranoia level (0, 1, or 2).
+        :setter: Sets the default paranoia level (0, 1, or 2).
+        :type: int.
         '''
         return self._default_paranoia_level
 
     @default_paranoia_level.setter
     def default_paranoia_level(self, value):
-        '''Sets the default paranoia level (0, 1, or 2).
-        It is used as the default paranoia-level in `send_scpi_cmd`.
-         - 0: send bare SCPI command
-         - 1: append `*OPC?` and send as query
-         - 2: append `:SYST:ERR?` and print warning if the response is not 0.
-        '''
+
         value = max(0, min(int(value), 2))
         self._default_paranoia_level = value
 
@@ -682,6 +767,7 @@ class TEProteusInst(object):
             self._instptr = None
             self._slots = ()
             self._instr_id = 0
+            gc.collect()
 
     def send_scpi_query(self, scpi_str, max_resp_len=256):
         '''Sends SCPI query to instrument.
@@ -709,15 +795,17 @@ class TEProteusInst(object):
     def send_scpi_cmd(self, scpi_str, paranoia_level=None):
         '''Sends SCPI query to instrument.
 
-        The paranoia-level is either:
+        The `paranoia-level` is either:
          - 0: send bare SCPI command
          - 1: append `*OPC?` and send as query
          - 2: append `:SYST:ERR?` and print warning if the response is not 0.
-        If it is `None` then the `default_paranoia_level` is used.
+
+        If the given `paranoia-level` is `None`
+        then the `default_paranoia_level` is used.
 
         :param scpi_str: the SCPI string (a null-terminated string).
-        :param paranoia_level: either 0, 1 or 2.
-        :returns: error-code
+        :param paranoia_level: either 0, 1, 2 or None.
+        :returns: error-code.
         '''
         if paranoia_level is None:
             paranoia_level = self._default_paranoia_level
@@ -752,7 +840,7 @@ class TEProteusInst(object):
                 warnings.warn(wrnmsg)
                 cmd = str('*CLS').encode()
                 str_ptr = ct.c_char_p(cmd)
-                self._admin.tep_send_scpi(
+                self._admin._tep_send_scpi(
                     self._commptr, str_ptr, resp_buf, max_resp_len)
 
         return ret_code
