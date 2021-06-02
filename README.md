@@ -3,6 +3,8 @@
 
 PyProteus is a is Python Examples package that helps you to get start working with Proteus Instrument.
 
+## Preliminary requirements 
+
 ## Installation
 
 Clone the repository into your local machine and open OpenNotebook.bat
@@ -10,8 +12,7 @@ Clone the repository into your local machine and open OpenNotebook.bat
 ## Usage
 
 
-
-## Contributing
+## Table of Contents
 
 
 ## License
