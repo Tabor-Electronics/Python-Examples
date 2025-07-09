@@ -86,7 +86,7 @@ import warnings
 from ctypes.util import find_library
 from numpy.ctypeslib import ndpointer
 
-__version__ = '1.0.1'
+__version__ = '1.0.2'
 __docformat__ = 'reStructuredText'
 
 __all__ = [
@@ -106,7 +106,7 @@ class TEProteusAdmin(object):
             lib_path = os.path.join(script_dir, 'TEProteus.dll')
             if os.path.exists(lib_path):
                 lib_dir_path = script_dir
-        
+
         if lib_dir_path is not None:
             libpath = os.path.join(lib_dir_path, 'TEProteus.dll')
         else:
@@ -114,11 +114,8 @@ class TEProteusAdmin(object):
             if not libpath:
                 sys32path = str('C:/Windows/System32/TEProteus.dll')
                 if os.path.exists(sys32path):
-                    libpath = sys32path	
-                else:
-                    print('TEProteus.dll is not present at : C:/Windows/System32')
-        
-        print('Load TEProteus.dll from : {0}'.format(libpath))
+                    libpath = sys32path
+
         teplib = ct.cdll.LoadLibrary(libpath)
 
         if teplib is None:
@@ -655,7 +652,6 @@ class TEProteusAdmin(object):
                 instid = inst._instr_id
                 self._inst_dict[instid] = inst
                 return inst
-        print('unable to connect to instrument')
         return None
 
     def open_multi_slots_instrument(self, slot_ids, reset_hot_flag=True):
@@ -723,7 +719,6 @@ class TEProteusInst(object):
         self._admin = te_proteus_admin
         self._instptr = inst_ptr
         self._commptr = self._admin._tep_open_comm_intf(inst_ptr)
-        self._streamptr = None
         self._instr_id = self._admin._tep_get_instrument_id(inst_ptr)
         self._default_paranoia_level = 1
 
@@ -767,7 +762,6 @@ class TEProteusInst(object):
             self._admin._tep_close_instrument(self._instptr)
             self._commptr = None
             self._instptr = None
-            self._streamptr = None
             self._instptr = None
             self._slots = ()
             self._instr_id = 0
@@ -886,12 +880,11 @@ class TEProteusInst(object):
     def acquire_stream_intf(self, chan_num):
         '''Acquire the stream-writing interface of the specified channel.
         :param chan_num: the channel-number.
-        :returns: None.
+        :returns: streaming writing-interface.
         '''
         chan_num = np.int32(chan_num)
         # pylint: disable=protected-access
-        self._streamptr = \
-            self._admin._tep_get_write_stream_intf(self._instptr, chan_num)
+        return self._admin._tep_get_write_stream_intf(self._instptr, chan_num)
 
     def get_stream_packet_size(self):
         '''Gets the size in bytes of a single packet of streaming data.
@@ -900,29 +893,31 @@ class TEProteusInst(object):
         # pylint: disable=protected-access
         return self._admin._tep_get_stream_packet_size()
 
-    def is_write_stream_active(self):
+    def is_write_stream_active(self, stream_intf):
         '''Checks if the given stream-writing interface is active.
+        :param stream_intf: streaming writing-interface that was received from `acquire_stream_intf`.
         :returns: True if the interface is active; otherwise, False.
         '''
-        if self._streamptr is not None:
+        if stream_intf is not None:
             # pylint: disable=protected-access
-            if self._admin._tep_is_write_stream_active(self._streamptr):
+            if self._admin._tep_is_write_stream_active(stream_intf):
                 return True
         return False
 
-    def get_stream_empty_buff(self):
+    def get_stream_empty_buff(self, stream_intf):
         '''Gets empty-buffer from the given stream-writing interface.
 
         The caller should fill the buffer with packet of streaming-data,
         and then return the ownership of the buffer by calling either
         `put_stream_full_buff` or `tep_put_stream_empty_buff`.
 
+        :param stream_intf: streaming writing-interface that was received from `acquire_stream_intf`.
         :returns: pointer to empty-buffer.
         '''
         # pylint: disable=protected-access
-        return self._admin._tep_get_stream_empty_buff(self._streamptr)
+        return self._admin._tep_get_stream_empty_buff(stream_intf)
 
-    def put_stream_full_buff(self, full_buff, usec_wait):
+    def put_stream_full_buff(self, stream_intf, full_buff, usec_wait):
         '''Puts back a full buffer.
 
         The buffer should be a buffer that was obtained from the given
@@ -933,35 +928,38 @@ class TEProteusInst(object):
         still own the buffer, and must return ownership by calling either
         `put_stream_empty_buff` or `put_stream_full_buff`.
 
+        :param stream_intf: streaming writing-interface that was received from `acquire_stream_intf`.
         :param full_buff: buffer that was obtained from the interface.
         :param usec_wait: timeout in microseconds (-1: infinite timeout).
         :returns: 0: success; 1: timeout expired; -1: error.
         '''
         # pylint: disable=protected-access
         return self._admin.\
-            _tep_put_stream_full_buff(self._streamptr, full_buff, usec_wait)
+            _tep_put_stream_full_buff(stream_intf, full_buff, usec_wait)
 
-    def put_stream_empty_buff(self, empty_buff):
+    def put_stream_empty_buff(self, stream_intf, empty_buff):
         '''Puts back empty buffer.
 
         The buffer should be a buffer that was obtained from the given
         stream-writing interface. This method does not blocks the calling
         thread but the buffer is not going to be transmitted.
 
+        :param stream_intf: streaming writing-interface that was received from `acquire_stream_intf`.
         :param empty_buff: buffer that was obtained from the interface.
         :returns: 0: success; -1: error.
         '''
         # pylint: disable=protected-access
         return self._admin.\
-            _tep_put_stream_empty_buff(self._streamptr, empty_buff)
+            _tep_put_stream_empty_buff(stream_intf, empty_buff)
 
-    def push_stream_packet(self, bin_dat, bytes_offs, usec_wait):
+    def push_stream_packet(self, stream_intf, bin_dat, bytes_offs, usec_wait):
         '''Pushes a packet of streaming-data from block of uint8 wave-samples.
 
         It is equivalent to get empty-buffer, fill it with data from the
         specified offset in the given wave-data, and then put back the full
         buffer and if it fails, put back empty buffer.
 
+        :param stream_intf: streaming writing-interface that was received from `acquire_stream_intf`.
         :param bin_dat: `numpy` array with data.
         :param bytes_offs: offset in bytes inside the `bin_dat` array.
         :param usec_wait: timeout in microseconds (-1: infinite timeout).
@@ -974,4 +972,4 @@ class TEProteusInst(object):
 
         # pylint: disable=protected-access
         return self._admin.\
-            _tep_push_stream_packet(self._streamptr, p_dat, offs, tmo)
+            _tep_push_stream_packet(stream_intf, p_dat, offs, tmo)

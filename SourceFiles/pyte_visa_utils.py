@@ -41,7 +41,7 @@ __all__ = [
     'open_session',
     'send_cmd']
 
-
+ 
 def _list_udp_awg_instruments():
     '''Using UDP list all AWG-Instruments with LAN Interface.
     :returns: two lists: 1. VISA-Resource-Names 2. Instrument-IDN-Strings
@@ -52,25 +52,22 @@ def _list_udp_awg_instruments():
     FRMHEADERLEN = 22
     FRMDATALEN = 1024
     FLASHLINELEN = 32
-    # FLASHOPCODELEN  = 1
+    # FLASHOPCODELEN = 1
 
-    vi_tcpip_resource_names = []
     vi_tcpip_resource_descs = []
 
     query_msg = bytearray([0xff] * FRMHEADERLEN)
-    query_msg[0] = 'T'
-    query_msg[1] = 'E'
-    query_msg[2] = 'I'
-    query_msg[3] = 'D'
+  
+    query_msg[0] = 0x54 
+    query_msg[1] = 0x45 
+    query_msg[2] = 0x49 
+    query_msg[3] = 0x44 
 
     try:
-        udp_server_sock = socket.socket(
-            socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_IP)
+        udp_server_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_IP)
         udp_server_sock.bind(("0.0.0.0", UDPSRVPORT))  # any IP-Address
-        udp_server_sock.setsockopt(
-            socket.SOL_SOCKET, socket.SO_RCVBUF, FRMHEADERLEN + FRMDATALEN)
-        udp_server_sock.setsockopt(
-            socket.SOL_SOCKET, socket.SO_BROADCAST, True)
+        udp_server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, FRMHEADERLEN + FRMDATALEN)
+        udp_server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, True)
 
         # Send the query-message (to all)
         udp_server_sock.sendto(query_msg, (BROADCAST, UPFRMPORT))
@@ -81,37 +78,40 @@ def _list_udp_awg_instruments():
             try:
                 data, addr = \
                     udp_server_sock.recvfrom(FRMHEADERLEN + FRMDATALEN)
-                vi_tcpip_resource_names.append(
-                    "TCPIP::{0}::5025::SOCKET".format(addr[0]))
 
                 ii = FRMHEADERLEN
                 manuf_name = ''
-                model_name = ''
+                model_name = ''              
+                address = ''
+                port = ''               
                 serial_nb = ''
-                fw_ver = ''
+
                 while ii + FLASHLINELEN <= len(data):
                     opcode = data[ii]
                     attr = data[ii + 1: ii + FLASHLINELEN - 1]
                     attr.rstrip()
-                    if opcode == 'D':
-                        manuf_name = attr
-                    elif opcode == 'I':
-                        model_name = attr
-                    elif opcode == 'S':
-                        serial_nb = attr
-                    elif opcode == 'F':
-                        fw_ver = attr
-
-                    idn = '{0:s},{1:s},{2:s},{3:s}'.format(
-                        manuf_name, model_name, serial_nb, fw_ver)
-                    vi_tcpip_resource_descs.append(idn)
+                    if opcode == 0x44:
+                        manuf_name = attr.decode('ascii').strip().strip('\x00')
+                    elif opcode == 0x49:
+                        model_name = attr.decode('ascii').strip().strip('\x00')
+                    elif opcode == 0x53:
+                        serial_nb = attr.decode('ascii').strip().strip('\x00')                   
+                    elif opcode == 0x57:
+                        address = attr.decode('ascii').strip().strip('\x00')                         
+                    elif opcode == 0x51:
+                        port = attr.decode('ascii').strip().strip('\x00') 
+                        
                     ii = ii + FLASHLINELEN
+
+                idn = '{0:s},{1:s},{2:s},{3:s},{4:s}'.format(manuf_name, model_name, serial_nb, address, port)
+                vi_tcpip_resource_descs.append(idn)
+
             except socket.timeout:
                 break
     except (IndexError, KeyError, NameError, AttributeError):
         pass
 
-    return vi_tcpip_resource_names, vi_tcpip_resource_descs
+    return vi_tcpip_resource_descs
 
 
 def _select_visa_rsc_name(
